@@ -1,0 +1,253 @@
+version: "3"
+
+tasks:
+  check-gh:
+    desc: Check if gh CLI is installed and authenticated
+    silent: true
+    cmds:
+      - |
+        if ! command -v gh >/dev/null 2>&1; then
+          echo "Error: gh CLI is not installed"
+          exit 1
+        fi
+        if ! gh auth status >/dev/null 2>&1; then
+          echo "Error: gh CLI is not authenticated. Run 'gh auth login' first."
+          exit 1
+        fi
+        echo "✓ gh CLI is ready"
+
+  var:ls:
+    desc: List variables from source repository
+    silent: true
+    vars:
+      REPO: '{{.source | default ""}}'
+      FIELDS: '{{.fields | default "name,value"}}'
+    cmds:
+      - |
+        if [ -z "{{.source}}" ]; then
+          echo "Error: \"source\" is required. Usage: task var:ls source=<owner>/<repo>"
+          exit 1
+        fi
+        echo "Fetching variables from {{.REPO}}..."
+        gh variable list --repo {{.REPO}} --json {{.FIELDS}}
+
+  var:sync:
+    desc: Synchronize all variables from source repository/source variable file to target repository
+    silent: true
+    vars:
+      SOURCE: '{{.source | default ""}}'
+      TARGET: '{{.target | default ""}}'
+      SOURCE_TYPE: '{{.source_type | default "repo"}}'
+    cmds:
+      - |
+        if [ -z "{{.source}}" ] || [ -z "{{.target}}" ]; then
+          echo "Error: \"source\" and \"target\" are required. Usage: task var:sync source=<owner>/<repo> target=<other>/<repo>"
+          exit 1
+        fi
+
+        if [ "{{.SOURCE_TYPE}}" == "repo" ]; then
+          echo "Fetching variables from {{.source}}..."
+          VARIABLES=$(gh variable list --repo {{.source}} --json name --jq '.[].name')
+
+          if [ -z "$VARIABLES" ]; then
+            echo "No variables found in {{.source}}"
+            exit 0
+          fi
+
+          echo "Synchronizing variables to {{.target}}..."
+          for var in $VARIABLES; do
+            value=$(gh variable get "$var" --repo {{.source}} --json value --jq '.value')
+            echo "✓ Setting $var"
+            gh variable set "$var" --body "$value" --repo {{.target}}
+          done
+          echo "✓ All variables synchronized successfully"
+          exit 1
+        fi
+
+        if [ "{{.SOURCE_TYPE}}" == "file" ]; then
+          if [ ! -f "{{.SOURCE}}" ]; then
+            echo "Error: Variable file '{{.SOURCE}}' not found. Please create it with variable names and values in the format VAR_NAME=VAR_VALUE, one per line."
+            exit 1
+          fi
+
+          echo "Reading variables from {{.SOURCE}}..."
+          while IFS='=' read -r key value; do
+            if [ -n "$key" ] && [ -n "$value" ]; then
+              key=$(echo "$key" | xargs)
+              value=$(echo "$value" | xargs)
+              echo "✓ Setting $key"
+              gh variable set "$key" --body "$value" --repo {{.target}}
+            fi
+          done < "{{.SOURCE}}"
+          echo "✓ All variables synchronized successfully"
+        fi
+
+  secret:ls:
+    desc: List secrets from source repository (names only)
+    silent: true
+    vars:
+      REPO: '{{.source | default ""}}'
+      FIELDS: '{{.fields | default "name"}}'
+    cmds:
+      - |
+        if [ -z "{{.source}}" ]; then
+          echo "Error: \"source\" is required. Usage: task secret:ls source=<owner>/<repo> [fields=name,visibility,...]"
+          exit 1
+        fi
+        echo "Fetching secrets from {{.REPO}}..."
+        gh secret list --repo {{.REPO}} --json {{.FIELDS}}
+
+  secret:sync:
+    desc: Synchronize secrets to target repository from the secret file or export secret names to the secret file template for manual entry
+    silent: true
+    vars:
+      SOURCE: '{{.source | default ""}}'
+      TARGET: '{{.target | default ""}}'
+      SECRET_FILE: '{{.secret_file | default ".env.secret"}}'
+    cmds:
+      - |
+        if [ -z "{{.source}}" ] || [ -z "{{.target}}" ]; then
+          echo "Error: \"source\" and \"target\" are required. Usage: task secret:sync source=<owner>/<repo> target=<other>/<repo> [secret_file=.env.secret]"
+          exit 1
+        fi
+
+        if [ ! -f "{{.SECRET_FILE}}" ]; then
+          echo "Error: Secret file '{{.SECRET_FILE}}' not found. Please create it with secret names and values, or use \"task secret:export source={{.source}} output_file={{.SECRET_FILE}}\" to generate the secret file template."
+          exit 1
+        fi
+
+        echo "Reading secrets from {{.SECRET_FILE}}..."
+        while IFS='=' read -r key value; do
+          if [ -n "$key" ] && [ -n "$value" ]; then
+            key=$(echo "$key" | xargs)
+            value=$(echo "$value" | xargs)
+            echo "✓ Setting $key"
+            gh secret set "$key" --body "$value" --repo {{.target}}
+          fi
+        done < "{{.SECRET_FILE}}"
+        echo "✓ All secrets synchronized successfully"
+
+  secret:export:
+    desc: Export secret names to template file for manual entry
+    silent: true
+    vars:
+      REPO: '{{.source | default ""}}'
+      OUTPUT_FILE: '{{.output_file | default ".env.secret"}}'
+    cmds:
+      - |
+        if [ -z "{{.source}}" ]; then
+          echo "Error: \"source\" is required. Usage: task secret:export source=<owner>/<repo> output_file=.env.secret"
+          exit 1
+        fi
+
+        echo "Fetching secret names from {{.REPO}}..."
+        SECRET_NAMES=$(gh secret list --repo {{.REPO}} --json name --jq '.[].name')
+
+        if [ -z "$SECRET_NAMES" ]; then
+          echo "No secrets found in {{.source}}"
+          exit 0
+        fi
+
+        echo "# GitHub Actions Secrets - Fill in the values" > {{.OUTPUT_FILE}}
+        echo "# Generated from {{.REPO}}" >> {{.OUTPUT_FILE}}
+        echo "" >> {{.OUTPUT_FILE}}
+
+        for secret in $SECRET_NAMES; do
+          echo "$secret=" >> {{.OUTPUT_FILE}}
+        done
+
+        echo "✓ Template file created: {{.OUTPUT_FILE}}"
+        echo "Please edit the file and add values, then run:"
+        echo "task secret:sync source={{.REPO}} target=<other>/<repo> secret_file={{.OUTPUT_FILE}}"
+
+  sync:
+    desc: Synchronize all variables and secrets
+    silent: true
+    vars:
+      SOURCE: '{{.source | default ""}}'
+      TARGET: '{{.target | default ""}}'
+      SECRET_FILE: '{{.secret_file | default ".env.secret"}}'
+    cmds:
+      - |
+        if [ -z "{{.source}}" ] || [ -z "{{.target}}" ]; then
+          echo "Error: \"source\" and \"target\" are required."
+          echo "Usage: task sync source=<owner>/<repo> target=<other>/<repo> [secret_file=.env.secret] [mode=manual|env]"
+          exit 1
+        fi
+
+        MODE="{{.mode | default "env"}}"
+
+        if [ -z "$MODE" ]; then
+          echo ""
+          echo "Select secret synchronization mode:"
+          echo "  1) Manual - Export template, you fill values, then import"
+          echo "  2) From .env.secret file - Import from an existing .env.secret file"
+          echo ""
+          printf "Enter choice [1-2]: "
+          read -r MODE_CHOICE
+
+          case "$MODE_CHOICE" in
+            1) MODE="manual" ;;
+            2) MODE="env" ;;
+            *) echo "Invalid choice. Using manual mode."; MODE="manual" ;;
+          esac
+        fi
+
+        echo ""
+        echo "=== Step 1: Synchronizing Variables ==="
+        task var:sync source={{.source}} target={{.target}}
+
+        echo ""
+        echo "=== Step 2: Synchronizing Secrets (mode: $MODE) ==="
+
+        if [ "$MODE" = "env" ]; then
+          if [ ! -f "{{.secret_file}}" ]; then
+            echo "Error: Secret file '{{.secret_file}}' not found"
+            exit 1
+          fi
+          task secret:sync source={{.source}} target={{.target}} secret_file={{.secret_file}}
+        else
+          task secret:export source={{.source}} output_file={{.secret_file}}
+        fi
+
+        echo ""
+        echo "=== Synchronization Complete ==="
+
+  help:
+    desc: Show usage help
+    silent: true
+    cmds:
+      - |
+        echo "GitHub Actions Secrets & Variables Synchronization Tool"
+        echo ""
+        echo "Prerequisites:"
+        echo "  - gh CLI installed (https://cli.github.com) and authenticated (gh auth login)"
+        echo "  - task CLI installed (https://taskfile.dev)"
+        echo ""
+        echo "On macOS you can run \"brew install gh go-task\" to get both tools"
+        echo ""
+        echo "Usage:"
+        echo "  task sync source=<owner>/<repo> target=<other>/<repo> [mode=manual|env] [secret_file=<secret_file>]"
+        echo "    Synchronize all variables and secrets (interactive secret synchronization mode selection)"
+        echo ""
+        echo "  task var:ls source=<owner>/<repo>"
+        echo "    List variables from source repository"
+        echo ""
+        echo "  task var:sync source=<owner>/<repo> target=<other>/<repo>"
+        echo "    Synchronize all variables from source repository to target repository"
+        echo ""
+        echo "  task var:sync source=<source_variable_file> source_type=file target=<other>/<repo>"
+        echo "    Synchronize all variables from source variable file to target repository"
+        echo ""
+        echo "  task secret:ls source=<owner>/<repo>"
+        echo "    List secret names from source repository"
+        echo ""
+        echo "  task secret:sync source=<owner>/<repo> target=<other>/<repo> secret_file=<secret_file>"
+        echo "    Synchronize secrets from a secret file"
+        echo ""
+        echo "  task secret:export source=<owner>/<repo> output_file=<secret_file>"
+        echo "    Export secret names to a secret file template for manual entry"
+        echo ""
+        echo "Examples:"
+        echo "  task sync source=<owner>/<source-repo> target=<owner>/<target-repo>"
+        echo "  task sync source=<owner>/<source-repo> target=<owner>/<target-repo> mode=env secret_file=<secret_file>"
