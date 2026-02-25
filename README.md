@@ -127,9 +127,11 @@ We cannot retrieve secret values via gh CLI due to security reasons.
 #### Workaround solution
 
 1. Export secret names to template, user manually fills values then.
-    - Use `gh secret list --repo <repo> --json name --jq '.[].name'` to get all secret names.
+   - Use `gh secret list --repo <repo> --json name --jq '.[].name'` to get all
+     secret names.
 2. Synchronize secret to the target repository using the secret file.
-    - Read secret entries from the secret file and use `gh secret set <key> --repo <repo> --body <value>` to set each.
+   - Read secret entries from the secret file and use
+     `gh secret set <key> --repo <repo> --body <value>` to set each.
 
 ## Contact
 
