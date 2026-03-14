@@ -160,6 +160,43 @@ tasks:
         echo "Please edit the file and add values, then run:"
         echo "task secret:sync source={{.REPO}} target=<other>/<repo> secret_file={{.OUTPUT_FILE}}"
 
+  var:export:
+    desc: Export variables to template file for manual entry
+    silent: true
+    vars:
+      REPO: '{{.source | default ""}}'
+      OUTPUT_FILE: '{{.output_file | default ".env.vars"}}'
+    cmds:
+      - |
+        if [ -z "{{.source}}" ]; then
+          echo "Error: \"source\" is required. Usage: task var:export source=<owner>/<repo> output_file=.env.vars"
+          exit 1
+        fi
+
+        echo "Fetching variables from {{.REPO}}..."
+        gh variable list --repo {{.REPO}} --json name,value --jq '.[].name' > /tmp/var_keys.txt
+
+        if [ ! -s /tmp/var_keys.txt ]; then
+          echo "No variables found in {{.source}}"
+          exit 0
+        fi
+
+        echo "# GitHub Actions Variables - Fill in the values" > {{.OUTPUT_FILE}}
+        echo "# Generated from {{.REPO}}" >> {{.OUTPUT_FILE}}
+        echo "" >> {{.OUTPUT_FILE}}
+
+        while read -r key; do
+          value=$(gh variable get "$key" --repo {{.REPO}} --json value --jq '.value')
+          echo "$key=$value" >> {{.OUTPUT_FILE}}
+          echo "✓ $key"
+        done < /tmp/var_keys.txt
+        rm /tmp/var_keys.txt
+
+        echo "✓ Variables have been exported to {{.OUTPUT_FILE}}"
+        echo ""
+        echo "Please edit the file and add values, then run:"
+        echo "task var:sync source={{.OUTPUT_FILE}} source_type=file target=<owner>/<repo>"
+
   sync:
     desc: Synchronize all variables and secrets
     silent: true
